@@ -1,0 +1,11 @@
+{
+    "name": "image-processor",
+    "version": "1.0.0",
+    "dependencies": [
+    "boost-system",
+    "boost-thread",
+    "boost-json",
+    "boost-beast",
+    "opencv"
+    ]
+   }

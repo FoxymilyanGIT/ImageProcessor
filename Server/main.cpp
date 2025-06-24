@@ -1,12 +1,17 @@
 #include <algorithm>
+#include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/http/status.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/json.hpp>
-#include <chrono>
+#include <boost/system/detail/error_code.hpp>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <opencv2/core/types.hpp>
+#include <stdexcept>
 #include <thread>
 #include <iostream>
 #include <atomic>
@@ -22,12 +27,12 @@ using tcp = net::ip::tcp;
 
 namespace constants
 {
-	const int PORT = 8000;
-	const int CONNECTIONS_LIMIT = 2;
-	const int FONT_FACE =cv::FONT_HERSHEY_SIMPLEX;
-	const double BASE_FONT_SCALE = 2.0;
-	const int BASE_FONT_THICKNESS = 2;
-	const double BASE_WIDTH = 1079;
+	constexpr int PORT = 8000;
+	constexpr int CONNECTIONS_LIMIT = 5;
+	constexpr int FONT_FACE =cv::FONT_HERSHEY_SIMPLEX;
+	constexpr double BASE_FONT_SCALE = 2.0;
+	constexpr int BASE_FONT_THICKNESS = 2;
+	constexpr double BASE_WIDTH = 1079;
 }
 
 std::atomic<int> active_connections{ 0 };
@@ -52,7 +57,6 @@ void http_session(tcp::socket socket) {
 	}
 
 	active_connections++;
-	std::this_thread::sleep_for(std::chrono::seconds(10));
 	try 
 	{
 		beast::flat_buffer buffer;
@@ -69,6 +73,10 @@ void http_session(tcp::socket socket) {
 			std::string text = json::value_to<std::string>(obj["text"]);
 			std::string image_b64 = json::value_to<std::string>(obj["image"]);
 			std::vector<unsigned char> image_data = base64_decode(image_b64);
+			if (image_data.empty())
+			{
+				throw std::runtime_error("Decoded image data is empty!");
+			}
 
 			cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
 
@@ -95,8 +103,12 @@ void http_session(tcp::socket socket) {
 			json::object result_json;
 			result_json["result"] = result_b64;
 
-			http::response<http::string_body> res;
+			http::response<http::string_body> res
+			{
+				http::status::ok, req.version()
+			};
 			res.set(http::field::content_type, "application/json");
+			res.keep_alive(req.keep_alive());
 			res.body() = json::serialize(result_json);
 			res.prepare_payload();
 
@@ -114,11 +126,15 @@ void http_session(tcp::socket socket) {
 			http::write(socket, res);
 		}
 	}
-	catch (std::exception& e) 
+	catch (const std::exception& e) 
 	{
 		std::cerr << "Session error:" << e.what() << "\n";
 	}
-	active_connections--;
+	
+	auto guard = std::unique_ptr<void, std::function<void(void*)>>(nullptr, [&](void*)
+	{
+		active_connections--;
+	});
 }
 
 int main() 
@@ -126,15 +142,41 @@ int main()
 	try 
 	{
 		net::io_context ioc;
-
 		tcp::acceptor acceptor(ioc, { tcp::v4(),constants::PORT });
 		std::cout << "Server started at port:" << constants::PORT << "\n";
 
-		for (;;) 
+		std::function<void()> do_accept;
+		do_accept = [&]() 
 		{
-			tcp::socket socket = acceptor.accept();
-			std::thread{ http_session, std::move(socket) }.detach();
-		}		
+			std::shared_ptr<tcp::socket> socket = std::make_shared<tcp::socket>(ioc);
+			acceptor.async_accept(*socket, [&,socket](boost::system::error_code ec)
+			{
+				if(!ec) 
+				{
+					boost::asio::post(ioc, [s = std::move(*socket)]() mutable {
+						http_session(std::move(s));
+					});
+				}
+				do_accept();
+			});
+		};
+
+		do_accept();
+
+		std::vector<std::thread> threads;
+		const unsigned int thread_count = constants::CONNECTIONS_LIMIT;
+		for (unsigned int i = 0; i < thread_count; ++i) 
+		{
+			threads.emplace_back([&ioc](){
+				ioc.run();
+			});
+		}
+
+		for (std::thread& t : threads)
+		{
+			t.join();
+		}
+	
 	}
 	catch (std::exception& e) 
 	{

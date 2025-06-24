@@ -5,7 +5,12 @@ add_executable(client
 
 target_link_libraries (client
 Boost::system
-Boost::thread
 Boost::json
-ws2_32
 )
+
+if (WIN32)
+    target_link_libraries (client 
+        ws2_32
+        mswsock
+    )
+endif()

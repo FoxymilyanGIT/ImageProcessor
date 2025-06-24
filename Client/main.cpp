@@ -1,5 +1,7 @@
 #include "base64.h"
 #include <algorithm>
+#include <boost/algorithm/string.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
@@ -48,7 +50,8 @@ std::string read_file_base64(const std::string &path)
   std::ifstream file(path, std::ios::binary);
   std::ostringstream ss;
   ss << file.rdbuf();
-  return base64_encode(reinterpret_cast<const unsigned char *>(ss.str().c_str()),ss.str().length());
+  std::string data = ss.str();
+  return base64_encode(reinterpret_cast<const unsigned char *>(data.c_str()),data.size());
 }
 
 void save_image_from_base64(const std::string &base64_str, const std::string &out_path) 
@@ -66,21 +69,25 @@ std::string request_text_string()
   return text;
 }
 
+std::string trim_quotes(const std::string& s)
+{
+  if (s.size() >=2 && s.front() == '"' && s.back() == '"')
+  {
+    return s.substr(1,s.size() - 2);
+  }
+  return s;
+}
+
 bool check_extention(const std::string &filename, const std::string &extention) 
 {
-  fs::path path(filename);
+  std::string trimmed = trim_quotes(filename);
+  fs::path path(trimmed);
   if(!fs::exists(path) && !fs::is_regular_file(path))
   {
     return false;
   }
 
-  std::string actual_ext = path.extension().string();
-  std::string expected_ext = extention;
-
-  std::transform(actual_ext.begin(),actual_ext.end(),actual_ext.begin(), ::tolower);
-  std::transform(expected_ext.begin(),expected_ext.end(),expected_ext.begin(),::tolower);
-
-  return actual_ext == expected_ext;
+  return boost::iequals(path.extension().string(),extention);
 }
 
 std::string request_image_path() 
@@ -94,14 +101,15 @@ std::string request_image_path()
 
 std::string validate_path(const std::string& user_input, const fs::path& default_path = "./")
 {
-  fs::path path(user_input);
+  std::string trimmed = trim_quotes(user_input);
+  fs::path path(trimmed);
   if (fs::exists(path))
   {
     return fs::absolute(path).string();
   }
   else 
   {
-    std::cerr  << "Invalid path: \"" << user_input << "\", using default: " << default_path << "\n";
+    std::cerr  << "Invalid path: \"" << trimmed << "\", using default: " << default_path << "\n";
     return fs::absolute(default_path).string();
   }
 }
@@ -123,7 +131,6 @@ int main()
   bool success = false;
 
   image_path = request_image_path();
-
   if (check_extention(image_path, ".jpg") || check_extention(image_path, ".jpeg")) 
   {
     std::cout << "File: " << image_path << " accepted!\n";
@@ -137,7 +144,12 @@ int main()
   }
 
   result_path = request_result_path();
-  std::string image_b64 = read_file_base64(image_path);
+  std::string image_b64 = read_file_base64(trim_quotes(image_path));
+  if (image_b64.empty())
+  {
+    std::cerr << "Image base64 is empty!\n";
+    return 1;
+  }
   json::object req_json{{"text", text}, {"image", image_b64}};
   std::string body = json::serialize(req_json);
 

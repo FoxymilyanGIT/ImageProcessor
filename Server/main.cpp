@@ -1,14 +1,17 @@
+#include <algorithm>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/json.hpp>
+#include <chrono>
 #include <iostream>
+#include <opencv2/core/types.hpp>
 #include <thread>
 #include <iostream>
-#include <fstream>
 #include <atomic>
 #include <opencv4/opencv2/opencv.hpp>
+#include <vector>
 #include "base64.h"
 
 namespace beast = boost::beast;
@@ -20,7 +23,11 @@ using tcp = net::ip::tcp;
 namespace constants
 {
 	const int PORT = 8000;
-	const int CONNECTIONS_LIMIT = 10;
+	const int CONNECTIONS_LIMIT = 2;
+	const int FONT_FACE =cv::FONT_HERSHEY_SIMPLEX;
+	const double BASE_FONT_SCALE = 2.0;
+	const int BASE_FONT_THICKNESS = 2;
+	const double BASE_WIDTH = 1079;
 }
 
 std::atomic<int> active_connections{ 0 };
@@ -31,12 +38,11 @@ void http_session(tcp::socket socket) {
 	{
 		std::cerr << "Connection refused: too many active connections\n";
 	
-
 		http::response<http::string_body> res{
 			http::status::service_unavailable, 11
 		};
-		res.set(http::field::content_type, "text/plain");
-		res.body() = "Server is buys. Please try again later.";
+		res.set(http::field::content_type, "application/json");
+		res.body() = json::serialize("Server is busy");
 		res.prepare_payload();
 		beast::error_code ec;
 		http::write(socket, res, ec);
@@ -46,6 +52,7 @@ void http_session(tcp::socket socket) {
 	}
 
 	active_connections++;
+	std::this_thread::sleep_for(std::chrono::seconds(10));
 	try 
 	{
 		beast::flat_buffer buffer;
@@ -59,56 +66,41 @@ void http_session(tcp::socket socket) {
 		{
 			json::value value = json::parse(req.body());
 			json::object obj = value.as_object();
-
 			std::string text = json::value_to<std::string>(obj["text"]);
 			std::string image_b64 = json::value_to<std::string>(obj["image"]);
-			auto image_data = base64_decode(image_b64);
-
-			std::cout << "Text:" << text << "\n";
-
-			std::ofstream out("images/uploaded_image.jpeg", std::ios::binary);
-			if (out.is_open())
-			{
-				out.write(reinterpret_cast<const char*>(image_data.data()), image_data.size());
-				out.close();
-				std::cout << "Saved uploaded_image.jpeg (" << req.body().size() << " bytes)\n";
-			}
-			else
-			{
-				std::cerr << "Failed to open output stream\n";
-			}
+			std::vector<unsigned char> image_data = base64_decode(image_b64);
 
 			cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
 
-			int font_face = cv::FONT_HERSHEY_SIMPLEX;
-			double font_scale = 1.0;
-			int thickness = 2;
+			double scale_factor = img.cols / constants::BASE_WIDTH;
+			double font_scale = constants::BASE_FONT_SCALE * scale_factor;
+			int thickness = std::max(1,static_cast<int>(constants::BASE_FONT_THICKNESS * scale_factor));
 
-			cv::Size text_size = cv::getTextSize(text, font_face, font_scale, thickness, 0);
-
+			cv::Size text_size = cv::getTextSize(text, constants::FONT_FACE, font_scale, thickness, 0);
 			cv::Point text_origin(
 				(img.cols - text_size.width) / 2,
-				img.rows - 10
+				img.rows - text_size.height
 			);
 
+			cv::Mat gray;
+			cv::cvtColor(img,gray, cv::COLOR_BGR2GRAY);
+			double mean_brightness = cv::mean(gray)[0];
+			cv::Scalar text_color = (mean_brightness > 127)? cv::Scalar(0,0,0) : cv::Scalar(255,255,255);
 
-			cv::putText(img, text, text_origin, font_face, font_scale, CV_RGB(255,255,255),thickness, cv::LINE_AA);
+			cv::putText(img, text, text_origin, constants::FONT_FACE, font_scale, text_color,thickness, cv::LINE_AA);
 			std::vector<uchar> buf;
 			cv::imencode(".jpeg", img, buf);
 			std::string result_b64 = base64_encode(buf.data(), buf.size());
-
 
 			json::object result_json;
 			result_json["result"] = result_b64;
 
 			http::response<http::string_body> res;
-		
 			res.set(http::field::content_type, "application/json");
 			res.body() = json::serialize(result_json);
 			res.prepare_payload();
 
 			http::write(socket, res);
-
 		}
 		else
 		{
@@ -121,8 +113,6 @@ void http_session(tcp::socket socket) {
 			res.prepare_payload();
 			http::write(socket, res);
 		}
-
-
 	}
 	catch (std::exception& e) 
 	{
@@ -143,7 +133,7 @@ int main()
 		for (;;) 
 		{
 			tcp::socket socket = acceptor.accept();
-			std::thread{ http_session, std::move(socket),  }.detach();
+			std::thread{ http_session, std::move(socket) }.detach();
 		}		
 	}
 	catch (std::exception& e) 

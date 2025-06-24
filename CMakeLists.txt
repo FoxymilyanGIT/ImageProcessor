@@ -9,4 +9,5 @@ find_package(Boost REQUIRED COMPONENTS system thread json)
 find_package(OpenCV REQUIRED)
 
 
-add_subdirectory(ImageServer)
+add_subdirectory(Server)
+add_subdirectory(Client)

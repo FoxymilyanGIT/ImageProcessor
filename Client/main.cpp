@@ -9,6 +9,7 @@
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/http/message_fwd.hpp>
+#include <boost/beast/http/status.hpp>
 #include <boost/beast/http/string_body_fwd.hpp>
 #include <boost/beast/http/verb.hpp>
 #include <boost/beast/http/write.hpp>
@@ -182,9 +183,9 @@ int main()
       auto response_json = json::parse(res.body()).as_object();
       std::string result_string = response_json["result"].as_string().c_str();
 
-      if (result_string == "Server is busy")
+      if (res.result() != http::status::ok)
       {
-        std::cout << result_string << " Retrying after 5 seconds";
+        std::cout << "Error (" << res.result() <<"): " << result_string << " \nRetrying after 5 seconds\n";
         std::this_thread::sleep_for(std::chrono::seconds(constants::TIMEOUT_IN_SEC));
         continue;
       }

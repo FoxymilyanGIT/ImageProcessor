@@ -95,7 +95,7 @@ std::string request_image_path()
 {
   std::string image_path;
   std::cout << "Image must exist and has .jpg (.jpeg) extention\n";
-  std::cout << "Enter image path without quotes:\nExample: D:\\Folder\\image.jpg\n";
+  std::cout << "Enter image path:\n";
   std::cin >> image_path;
   return image_path;
 }

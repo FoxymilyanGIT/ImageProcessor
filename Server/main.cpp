@@ -18,6 +18,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <thread>
 #include <mutex>
@@ -46,8 +47,8 @@ namespace constants
 
 class ConnectionManager {
 	private:
-		const int max_connections;
-		int active_connections;
+		const unsigned int max_connections;
+		unsigned int active_connections;
 		std::mutex m;
 	public:
 		ConnectionManager(int max)
@@ -93,60 +94,67 @@ beast::error_code send_response(tcp::socket& socket ,const http::status& respons
 
 void http_session(std::shared_ptr<tcp::socket> socket) 
 {
-	beast::flat_buffer buffer;
+	std::shared_ptr<beast::flat_buffer> buffer = std::make_shared<beast::flat_buffer>();
 	beast::error_code ec;
-	http::request_parser<http::string_body> parser;
-	parser.body_limit(20 * 1024 * 1024);
+	std::shared_ptr<http::request_parser<http::string_body>> parser = std::make_shared<http::request_parser<http::string_body>>();
+	parser->body_limit(20 * 1024 * 1024);
 
-	http::read(*socket, buffer, parser);
-	std::cout << "[DEBUG] Data read";
+	std::cout << "[DEBUG] Data read\n";
 
-	http::request<http::string_body> req = parser.get();
-
-	if (req.method() == http::verb::post && req[http::field::content_type] == "application/json")
+	http::async_read(*socket, *buffer, *parser,[socket,buffer,parser](beast::error_code ec,std::size_t bytes_transfered)
 	{
-		json::value value = json::parse(req.body());
-		json::object obj = value.as_object();
-		std::string text = json::value_to<std::string>(obj["text"]);
-		std::string image_b64 = json::value_to<std::string>(obj["image"]);
-		std::vector<unsigned char> image_data = base64_decode(image_b64);
-		if (image_data.empty())
+		if (ec)
 		{
-			throw std::runtime_error("Decoded image data is empty!");
+			std::cerr << "Read failed: " << ec.message() << "\n";
+			return;
 		}
 
-		cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+		http::request<http::string_body> req = parser->get();
 
-		double scale_factor = img.cols / constants::BASE_WIDTH;
-		double font_scale = constants::BASE_FONT_SCALE * scale_factor;
-		int thickness = std::max(1,static_cast<int>(constants::BASE_FONT_THICKNESS * scale_factor));
+		if (req.method() == http::verb::post && req[http::field::content_type] == "application/json")
+		{
+			json::value value = json::parse(req.body());
+			json::object obj = value.as_object();
+			std::string text = json::value_to<std::string>(obj["text"]);
+			std::string image_b64 = json::value_to<std::string>(obj["image"]);
+			std::vector<unsigned char> image_data = base64_decode(image_b64);
+			if (image_data.empty())
+			{
+				throw std::runtime_error("Decoded image data is empty!");
+			}
 
-		cv::Size text_size = cv::getTextSize(text, constants::FONT_FACE, font_scale, thickness, 0);
-		cv::Point text_origin(
-			(img.cols - text_size.width) / 2,
-			img.rows - text_size.height
-		);
+			cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
 
-		cv::Mat gray;
-		cv::cvtColor(img,gray, cv::COLOR_BGR2GRAY);
-		double mean_brightness = cv::mean(gray)[0];
-		cv::Scalar text_color = (mean_brightness > 127)? cv::Scalar(0,0,0) : cv::Scalar(255,255,255);
+			double scale_factor = img.cols / constants::BASE_WIDTH;
+			double font_scale = constants::BASE_FONT_SCALE * scale_factor;
+			int thickness = std::max(1,static_cast<int>(constants::BASE_FONT_THICKNESS * scale_factor));
 
-		cv::putText(img, text, text_origin, constants::FONT_FACE, font_scale, text_color,thickness, cv::LINE_AA);
-		std::vector<uchar> buf;
-		cv::imencode(".jpeg", img, buf);
-		std::string result_b64 = base64_encode(buf.data(), buf.size());
+			cv::Size text_size = cv::getTextSize(text, constants::FONT_FACE, font_scale, thickness, 0);
+			cv::Point text_origin(
+				(img.cols - text_size.width) / 2,
+				img.rows - text_size.height
+			);
 
-		ec = send_response(*socket, http::status::ok, result_b64);
+			cv::Mat gray;
+			cv::cvtColor(img,gray, cv::COLOR_BGR2GRAY);
+			double mean_brightness = cv::mean(gray)[0];
+			cv::Scalar text_color = (mean_brightness > 127)? cv::Scalar(0,0,0) : cv::Scalar(255,255,255);
 
-	}
-	else
-	{
-		ec = send_response(*socket, http::status::method_not_allowed, "Only POST allowed");
-	}
-	socket->shutdown(tcp::socket::shutdown_both,ec);
-	socket->close(ec);
+			cv::putText(img, text, text_origin, constants::FONT_FACE, font_scale, text_color,thickness, cv::LINE_AA);
+			std::vector<uchar> buf;
+			cv::imencode(".jpeg", img, buf);
+			std::string result_b64 = base64_encode(buf.data(), buf.size());
 
+			ec = send_response(*socket, http::status::ok, result_b64);
+
+		}
+		else
+		{
+			ec = send_response(*socket, http::status::method_not_allowed, "Only POST allowed");
+		}
+		socket->shutdown(tcp::socket::shutdown_both,ec);
+		socket->close(ec);
+	});
 }
 
 int main() 
@@ -188,6 +196,7 @@ int main()
 								socket->close(ec);
 							}
 							conn_mgr->release();
+							std::cout << "[DEBUG] Connection released\n";
 						});
 						std::cout << "[DEBUG] Posted session to thread pool\n";
 					}
